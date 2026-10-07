@@ -1,0 +1,11 @@
+Package: PairwiseSims
+Type: Package
+Title: Concise Summary of What the Package Does
+Version: 0.0.1
+Date: 2026-06-09
+Authors@R: person("Your", "Name", role = c("aut", "cre"), email = "your@email.com")
+Description: More about what it does (maybe more than one line).
+License: GPL (>= 2)
+Imports: Rcpp (>= 1.1.1), RcppArmadillo
+LinkingTo: Rcpp, RcppArmadillo
+RoxygenNote: 7.3.3
