@@ -256,7 +256,8 @@ evaluate_all_methods <- function(n, p, rho_corr, mean_fn, snr, run_bkmr = FALSE,
       }
       
       sel_burnin <- seq(floor(fit_bkmr$iter / 2) + 1, fit_bkmr$iter)
-      h_new <- bkmr::ComputePostmeanHnew(fit_bkmr, Znew = S, sel = sel_burnin, method = "approx")
+      # Predict at the held-out test points (S_test), matching the other methods' MSE
+      h_new <- bkmr::ComputePostmeanHnew(fit_bkmr, Znew = S_test, sel = sel_burnin, method = "approx")
       beta_mean <- colMeans(fit_bkmr$beta[sel_burnin, , drop = FALSE])
       preds <- as.numeric(X_int_test %*% beta_mean + h_new$postmean)
       res["BKMR_MSE"] <- as.numeric(mean((preds - EY_test)^2))

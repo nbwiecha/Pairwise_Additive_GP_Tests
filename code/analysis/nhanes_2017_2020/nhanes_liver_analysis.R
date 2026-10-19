@@ -28,8 +28,17 @@ if(hpc){
   load("data/NHANES_2017_2020_Liver.Rdata")
 }
 
+# Guard against running on the old data file (n = 2,507 before never-smokers and
+# never-drinkers were kept; n = 5,980 after the recode).
+cat("Sample size:", nrow(data), "\n")
+print(table(Smoker = data$Smoker, useNA = "ifany"))
+if (nrow(data) == 2507) stop("data/NHANES_2017_2020_Liver.Rdata is the old (pre-recode) file; rerun the cleaning script.")
+
+# One BLAS thread per worker so the workers do not oversubscribe the allocated cores
+Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
 cl <- makeCluster(n_cores)
 registerDoSNOW(cl)
+cat("Workers:", n_cores, "\n")
 
 debug <- FALSE
 if(debug){
@@ -74,19 +83,10 @@ for(j in 1:p){
 # Convert S to a numeric matrix for the updated pipeline functions
 S_mat <- as.matrix(S)
 
-ALT_analysis_adj <- tryCatch(
-  {
-    # Attempt to run the pipeline with the full X matrix
-    data_analysis_pipeline_parallel(Y_ALT, X, S_mat)
-  },
-  error = function(e) {
-    # If the full X fails, print the error and fall back to intercept-only
-    message("Full X matrix failed. Falling back to intercept only. Error: ", e$message)
-    
-    # Using drop = FALSE ensures X remains a 1-column matrix rather than becoming a vector
-    data_analysis_pipeline_parallel(Y_ALT, X[, 1, drop = FALSE], S_mat)
-  }
-)
+# Education and sedentary time (in X) caused the PAGP fit to fail to converge, so
+# they are not included; all tests use an intercept-only linear part, with the
+# covariates in S entering the PAGP.
+ALT_analysis_adj <- data_analysis_pipeline_parallel(Y_ALT, X[, 1, drop = FALSE], S_mat)
 
 
 ALT_analysis_adj
@@ -99,19 +99,7 @@ ALT_metals <- run_unified_var_imp_pipeline_reml(Y_ALT, X[,1,drop=FALSE], S_mat,
                                                 test_idx_vec = 1:5, global_log_rho = ALT_analysis_adj$global_log_rho)
 ALT_metals
 
-AST_analysis_adj <- tryCatch(
-  {
-    # Attempt to run the pipeline with the full X matrix
-    data_analysis_pipeline_parallel(Y_AST, X, S_mat)
-  },
-  error = function(e) {
-    # If the full X fails, print the error and fall back to intercept-only
-    message("Full X matrix failed. Falling back to intercept only. Error: ", e$message)
-    
-    # Using drop = FALSE ensures X remains a 1-column matrix rather than becoming a vector
-    data_analysis_pipeline_parallel(Y_AST, X[, 1, drop = FALSE], S_mat)
-  }
-)
+AST_analysis_adj <- data_analysis_pipeline_parallel(Y_AST, X[, 1, drop = FALSE], S_mat)
 
 AST_analysis_adj
 AST_int_test <- run_unified_all_interactions_pipeline_reml(Y_AST, X[,1,drop=FALSE], S_mat, 
@@ -124,3 +112,4 @@ AST_metals <- run_unified_var_imp_pipeline_reml(Y_AST, X[,1,drop=FALSE], S_mat,
 
 AST_metals
 save.image(file="outputs/NHANES_Liver_Analysis.Rdata")
+stopCluster(cl)

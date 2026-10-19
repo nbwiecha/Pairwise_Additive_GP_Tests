@@ -33,8 +33,16 @@ if(hpc){
   load("data/NHANES_2017_2020_Liver.Rdata")
 }
 
+# Guard against running on the old data file (n = 2,507 before never-smokers and
+# never-drinkers were kept; n = 5,980 after the recode).
+cat("Sample size:", nrow(data), "\n")
+if (nrow(data) == 2507) stop("data/NHANES_2017_2020_Liver.Rdata is the old (pre-recode) file; rerun the cleaning script.")
+
+# One BLAS thread per worker so the workers do not oversubscribe the allocated cores
+Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
 cl <- makeCluster(n_cores)
 registerDoSNOW(cl)
+cat("Workers:", n_cores, "\n")
 
 debug <- FALSE
 if(debug){
@@ -108,3 +116,4 @@ gam.check(gam_ast)
 
 save(compet_analysis_alt, compet_analysis_ast,
      gam_alt, gam_ast, file="outputs/NHANES_Liver_Analysis_Competitors.Rdata")
+stopCluster(cl)

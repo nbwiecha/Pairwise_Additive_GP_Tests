@@ -87,6 +87,57 @@ fit_unified_full_model_reml <- function(Y, X, Z_cov, init_params) {
   ))
 }
 
+# ---------------------------------------------------------
+# Memory helpers (2026-10-19). At large n every n x n matrix is several hundred
+# MB, so these avoid full-size temporaries.
+# ---------------------------------------------------------
+
+# sum(A * B), computed in column blocks so no n x n temporary is created.
+sum_prod_blocked <- function(A, B, block = 512L) {
+  n <- ncol(A)
+  s <- 0
+  for (start in seq.int(1L, n, by = block)) {
+    idx <- start:min(n, start + block - 1L)
+    s <- s + sum(A[, idx, drop = FALSE] * B[, idx, drop = FALSE])
+  }
+  s
+}
+
+# tr(A %*% B) = sum(A * t(B)), computed in column blocks of A.
+tr_prod_blocked <- function(A, B, block = 512L) {
+  n <- ncol(A)
+  s <- 0
+  for (start in seq.int(1L, n, by = block)) {
+    idx <- start:min(n, start + block - 1L)
+    s <- s + sum(A[, idx, drop = FALSE] * t(B[idx, , drop = FALSE]))
+  }
+  s
+}
+
+# Null and test kernels for a fixed rho. For all three test types the C++ code
+# returns W0 = I + lam * K_null, dW0/dloglam = lam * K_null, and a K_test that
+# does not depend on lam, so the kernels are computed once (at lam = 1) and
+# reused by both the null fit and the score test.
+eval_unified_test_kernels <- function(Z_cov, fixed_log_rho, test_type, idx_args) {
+  n <- nrow(Z_cov)
+  cpp_res <- if (test_type == "var_imp") {
+    eval_unified_var_imp_fixed_rho(Z_cov, as.integer(c(idx_args) - 1),
+                                   fixed_log_rho, fixed_log_rho, 0, n)
+  } else if (test_type == "interaction") {
+    eval_unified_interaction_fixed_rho(Z_cov, as.integer(idx_args[1] - 1), as.integer(idx_args[2] - 1),
+                                       fixed_log_rho, fixed_log_rho, 0, n)
+  } else if (test_type == "all_interactions") {
+    eval_unified_all_interactions_fixed_rho(Z_cov, fixed_log_rho, 0, n)
+  } else {
+    stop("Unknown test_type: ", test_type)
+  }
+  out <- list(K_null = cpp_res$dW0_dloglam,   # lam = 1, so this is K_null
+              K_test = cpp_res$K_test)
+  rm(cpp_res)
+  gc(verbose = FALSE)
+  out
+}
+
 # 2. Fit Null Model Template (Lengthscale Fixed)
 fit_unified_H0_fixed_rho_reml <- function(Y, X, Z_cov, init_log_lam, fixed_log_rho, test_type, idx_args = NULL) {
   X <- as.matrix(X)
@@ -94,167 +145,180 @@ fit_unified_H0_fixed_rho_reml <- function(Y, X, Z_cov, init_log_lam, fixed_log_r
   Z_cov <- as.matrix(Z_cov)
   n <- length(Y)
   p <- ncol(X)
-  I_n <- diag(n)
-  
-  # --- ONE-TIME PRECOMPUTATION ---
-  if (test_type == "var_imp") {
-    cpp_res <- eval_unified_var_imp_fixed_rho(Z_cov, as.integer(c(idx_args) - 1), 
-                                              fixed_log_rho, fixed_log_rho, 0, n)
-  } else if (test_type == "interaction") {
-    cpp_res <- eval_unified_interaction_fixed_rho(Z_cov, as.integer(idx_args[1] - 1), as.integer(idx_args[2] - 1), 
-                                                  fixed_log_rho, fixed_log_rho, 0, n)
-  } else if (test_type == "all_interactions") {
-    cpp_res <- eval_unified_all_interactions_fixed_rho(Z_cov, fixed_log_rho, 0, n)
-  }
-  
-  K_null <- cpp_res$dW0_dloglam 
-  
+
+  # --- ONE-TIME PRECOMPUTATION (kept for the score test) ---
+  kern <- eval_unified_test_kernels(Z_cov, fixed_log_rho, test_type, idx_args)
+  K_null <- kern$K_null
+
   # --- FULL-STATE CACHE FOR NULL MODEL ---
   last_lam <- NULL
   last_state <- NULL
-  
+  n_evals <- 0L
+
   get_state <- function(log_lam) {
     if (!is.null(last_lam) && log_lam == last_lam) return(last_state)
-    
+
     lam_val <- exp(log_lam)
-    W0 <- I_n + lam_val * K_null
+    last_state <<- NULL          # release the previous Cholesky factor first
+    W0 <- lam_val * K_null
+    diag(W0) <- diag(W0) + 1     # W0 = I + lam * K_null, without forming I
     U <- try(chol(W0), silent = TRUE)
-    
+    rm(W0)
+
     if (inherits(U, "try-error")) {
       state <- list(error = TRUE)
     } else {
-      X_tilde <- forwardsolve(t(U), X)
-      Y_tilde <- forwardsolve(t(U), Y)
-      
+      X_tilde <- backsolve(U, X, transpose = TRUE)   # = forwardsolve(t(U), X)
+      Y_tilde <- backsolve(U, Y, transpose = TRUE)
+
       beta_hat <- tryCatch({ qr.solve(X_tilde, Y_tilde) }, error = function(e) MASS::ginv(X_tilde) %*% Y_tilde)
       sigma2_hat <- sum((Y_tilde - (X_tilde %*% beta_hat))^2) / (n - p)
       qr_X <- qr(X_tilde)
-      
-      state <- list(error = FALSE, U = U, X_tilde = X_tilde, Y_tilde = Y_tilde, 
+
+      state <- list(error = FALSE, U = U, X_tilde = X_tilde, Y_tilde = Y_tilde,
                     beta_hat = beta_hat, sigma2_hat = sigma2_hat, qr_X = qr_X,
                     lam_val = lam_val)
     }
-    
+
     last_lam <<- log_lam
     last_state <<- state
-    if (runif(1) < 0.1) gc(verbose = FALSE) 
+    n_evals <<- n_evals + 1L
+    if (n_evals %% 5L == 0L) gc(verbose = FALSE)   # deterministic; does not use the RNG
     return(state)
   }
-  
+
   obj_REML <- function(log_lam) {
     st <- get_state(log_lam)
     if (st$error || st$sigma2_hat <= 1e-12) return(1e10)
     return((n - p) * log(st$sigma2_hat) + 2 * sum(log(diag(st$U))) + 2 * sum(log(abs(diag(qr.R(st$qr_X))))))
   }
-  
+
   grad_REML <- function(log_lam) {
     st <- get_state(log_lam)
     if (st$error || st$sigma2_hat <= 1e-12) return(0)
-    
-    dW0_dloglam <- st$lam_val * K_null
-    
+
     W_inv <- chol2inv(st$U)
     W_inv_X <- W_inv %*% X
-    
+
     inv_R <- tryCatch(chol2inv(qr.R(st$qr_X)), error = function(e) MASS::ginv(t(st$X_tilde) %*% st$X_tilde))
-    P_mat <- W_inv - (W_inv_X %*% inv_R %*% t(W_inv_X))
-    
     alpha <- W_inv %*% (Y - (X %*% st$beta_hat))
-    
-    term1 <- sum(P_mat * dW0_dloglam) 
-    term2 <- as.numeric(t(alpha) %*% dW0_dloglam %*% alpha) / st$sigma2_hat
+
+    # P = W_inv - W_inv_X inv_R W_inv_X', and dW0/dloglam = lam * K_null, so
+    # tr(P dW) = lam * [sum(W_inv * K_null) - tr(inv_R W_inv_X' K_null W_inv_X)]
+    # without forming P or dW.
+    K_WX <- K_null %*% W_inv_X
+    term1 <- st$lam_val * (sum_prod_blocked(W_inv, K_null) -
+                             sum(diag(inv_R %*% crossprod(W_inv_X, K_WX))))
+    rm(W_inv)
+    term2 <- st$lam_val * as.numeric(crossprod(alpha, K_null %*% alpha)) / st$sigma2_hat
     return(term1 - term2)
   }
-  
-  opt_res <- optim(par = init_log_lam, fn = obj_REML, gr = grad_REML, 
+
+  opt_res <- optim(par = init_log_lam, fn = obj_REML, gr = grad_REML,
                    method = "L-BFGS-B", lower = -20, upper = 20, control = list(pgtol = 1e-5, factr = 1e7))
-  
+
   final_st <- get_state(opt_res$par)
-  
+
   return(list(
-    kernel_params = c(fixed_log_rho, opt_res$par), 
+    kernel_params = c(fixed_log_rho, opt_res$par),
     beta_hat = final_st$beta_hat,
     sigma2_hat = final_st$sigma2_hat,
     neg_reml_val = opt_res$value,
+    convergence = opt_res$convergence,
     test_type = test_type,
-    idx_args = idx_args
+    idx_args = idx_args,
+    K_null = K_null,          # reused by run_unified_score_test_reml
+    K_test = kern$K_test
   ))
 }
 
 # 3. Exact Score Test Template (2x2 Information Matrix)
+# Same statistic and moments as before; rewritten to keep at most ~4 n x n
+# matrices alive at once and to reuse the kernels from the null fit.
 run_unified_score_test_reml <- function(fit_H0, Y, X, Z_cov) {
   require(MASS)
+  X <- as.matrix(X)
+  Y <- as.numeric(Y)
   n <- nrow(X)
   p <- ncol(X)
-  I_n <- diag(n)
-  
+
   fixed_log_rho  <- fit_H0$kernel_params[1]
   log_lam        <- fit_H0$kernel_params[2]
   sigma2         <- fit_H0$sigma2_hat
-  
   lam_val <- exp(log_lam)
-  
-  if (fit_H0$test_type == "var_imp") {
-    cpp_res <- eval_unified_var_imp_fixed_rho(Z_cov, as.integer(c(fit_H0$idx_args) - 1), 
-                                              fixed_log_rho, fixed_log_rho, log_lam, n)
-  } else if (fit_H0$test_type == "interaction") {
-    cpp_res <- eval_unified_interaction_fixed_rho(Z_cov, as.integer(fit_H0$idx_args[1] - 1), as.integer(fit_H0$idx_args[2] - 1), 
-                                                  fixed_log_rho, fixed_log_rho, log_lam, n)
-  } else if (fit_H0$test_type == "all_interactions") {
-    cpp_res <- eval_unified_all_interactions_fixed_rho(Z_cov, fixed_log_rho, log_lam, n)
+
+  if (!is.null(fit_H0$K_null) && !is.null(fit_H0$K_test)) {
+    K_null <- fit_H0$K_null
+    K_test <- fit_H0$K_test
+  } else {
+    kern <- eval_unified_test_kernels(as.matrix(Z_cov), fixed_log_rho, fit_H0$test_type, fit_H0$idx_args)
+    K_null <- kern$K_null
+    K_test <- kern$K_test
+    rm(kern)
   }
-  
-  U <- chol(cpp_res$W0)
+
+  W0 <- lam_val * K_null
+  diag(W0) <- diag(W0) + 1
+  U <- chol(W0)
+  rm(W0)
   W_inv <- chol2inv(U)
-  
-  X_tilde <- forwardsolve(t(U), X)
-  Y_tilde <- forwardsolve(t(U), Y)
+
+  X_tilde <- backsolve(U, X, transpose = TRUE)
+  Y_tilde <- backsolve(U, Y, transpose = TRUE)
+  rm(U)
   qr_X <- qr(X_tilde)
-  
+
   W_inv_X <- W_inv %*% X
   inv_R <- tryCatch(chol2inv(qr.R(qr_X)), error = function(e) MASS::ginv(t(X_tilde) %*% X_tilde))
-  P_mat <- W_inv - (W_inv_X %*% inv_R %*% t(W_inv_X))
-  
+
   beta_hat <- tryCatch({ qr.solve(X_tilde, Y_tilde) }, error = function(e) MASS::ginv(X_tilde) %*% Y_tilde)
   alpha <- W_inv %*% (Y - (X %*% beta_hat))
-  
-  Q <- as.numeric((t(alpha) %*% cpp_res$K_test %*% alpha) / sigma2)
-  
-  tr_prod <- function(A, B) sum(A * t(B))
-  
-  PK <- P_mat %*% cpp_res$K_test
-  PV_lam <- P_mat %*% cpp_res$dW0_dloglam
-  
-  tr_PK <- sum(diag(PK))
-  tr_PV_lam <- sum(diag(PV_lam))
-  
+
+  Q <- as.numeric(crossprod(alpha, K_test %*% alpha) / sigma2)
+
+  # P = W_inv - W_inv_X inv_R W_inv_X'; built in place of W_inv.
+  P_mat <- W_inv - tcrossprod(W_inv_X %*% inv_R, W_inv_X)
+  rm(W_inv)
+  gc(verbose = FALSE)
+
+  # dW0/dloglam = lam * K_null, so traces involving it are scaled by lam.
+  tr_PK <- sum_prod_blocked(P_mat, K_test)                 # tr(P K_test)
+  tr_PV_lam <- lam_val * sum_prod_blocked(P_mat, K_null)   # tr(P dW)
+
+  PK <- P_mat %*% K_test
+  rm(K_test)
+  PKn <- P_mat %*% K_null                                  # P dW = lam * PKn
+  rm(P_mat, K_null)
+  gc(verbose = FALSE)
+
   I_nuis <- matrix(0, 2, 2)
   I_nuis[1, 1] <- (n - p) / 2
   I_nuis[1, 2] <- 0.5 * tr_PV_lam
   I_nuis[2, 1] <- I_nuis[1, 2]
-  I_nuis[2, 2] <- 0.5 * tr_prod(PV_lam, PV_lam)
-  
+  I_nuis[2, 2] <- 0.5 * lam_val^2 * tr_prod_blocked(PKn, PKn)
+
   I_cross <- matrix(0, 2, 1)
   I_cross[1, 1] <- 0.5 * tr_PK
-  I_cross[2, 1] <- 0.5 * tr_prod(PV_lam, PK) 
-  
-  I_test <- 0.5 * tr_prod(PK, PK)            
-  
+  I_cross[2, 1] <- 0.5 * lam_val * tr_prod_blocked(PKn, PK)
+
+  I_test <- 0.5 * tr_prod_blocked(PK, PK)
+  rm(PK, PKn)
+
   I_nuis_inv <- tryCatch(solve(I_nuis), error = function(e) MASS::ginv(I_nuis))
   V_schur <- as.numeric(I_test - (t(I_cross) %*% I_nuis_inv %*% I_cross))
-  
+
   if (V_schur <= 1e-12 || tr_PK <= 1e-12) {
     return(list(Q_stat = Q, p_value = 1.0, Satterthwaite_Scale = NA, Satterthwaite_DF = NA))
   }
-  
-  mu_Q <- tr_PK 
-  sigma2_Q <- 4 * V_schur 
-  
+
+  mu_Q <- tr_PK
+  sigma2_Q <- 4 * V_schur
+
   scale_a <- sigma2_Q / (2 * mu_Q)
   df_d    <- (2 * mu_Q^2) / sigma2_Q
-  
+
   p_val <- pchisq(Q / scale_a, df = df_d, lower.tail = FALSE)
-  
+
   return(list(Q_stat = Q, p_value = p_val, Satterthwaite_Scale = scale_a, Satterthwaite_DF = df_d))
 }
 

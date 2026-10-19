@@ -83,6 +83,31 @@ data_analysis_pipeline_sp <- function(Y, X, Z_cov, coords_sp, init_params_full=c
   ))
 }
 
+# Runs one spatial score test and returns its p-value, or "ERROR: <message>" if it
+# fails (including a NULL result), so worker failures are visible to the caller.
+run_test_or_error_sp <- function(Y, X, Z_cov, coords_sp, init_params_full, test_type, idx_args, global_rhos) {
+  res <- tryCatch(
+    run_unified_pipeline_reml_sp(Y, X, Z_cov, coords_sp, init_params_full = init_params_full,
+                                 test_type = test_type, idx_args = idx_args, global_rhos = global_rhos),
+    error = function(e) paste("ERROR:", conditionMessage(e)))
+  if (is.character(res)) return(res)
+  if (is.null(res) || is.null(res$p_value) || is.na(res$p_value)) {
+    return(paste("ERROR: test returned no p-value for", test_type, paste(idx_args, collapse = ",")))
+  }
+  res$p_value
+}
+
+# Stops with a list of every failed test, instead of passing NA p-values on.
+stop_if_test_errors_sp <- function(results, labels) {
+  failed <- grepl("^ERROR", results)
+  if (any(failed)) {
+    stop(sprintf("%d of %d tests failed:\n%s", sum(failed), length(results),
+                 paste0("  ", labels[failed], " -> ", results[failed], collapse = "\n")),
+         call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
 data_analysis_pipeline_parallel_sp <- function(Y, X, Z_cov, coords_sp, init_params_full=c(0,0,0,0), alpha=.05) {
   
   require(PairwiseSims)
@@ -97,41 +122,34 @@ data_analysis_pipeline_parallel_sp <- function(Y, X, Z_cov, coords_sp, init_para
   # 1. Estimate global model to get the anchor for plots and interactions[cite: 5]
   fit_full <- fit_unified_full_model_reml_sp(Y, X, Z_cov, coords_sp, init_params = init_params_full)
   
+  # Fail loudly rather than testing at the starting values of the lengthscales.
   if (is.null(fit_full) || fit_full$convergence != 0) {
-    warning("Global unified REML model failed to converge. Proceeding with default init.")
-    optimal_rhos <- c(init_params_full[1], init_params_full[3])
-  } else {
-    optimal_rhos <- c(fit_full$kernel_params[1], fit_full$kernel_params[3])
+    stop("Global unified REML model failed to converge (convergence code: ",
+         if (is.null(fit_full)) "NULL fit" else fit_full$convergence,
+         "). Not proceeding with the default rhos.")
   }
-  
+  optimal_rhos <- c(fit_full$kernel_params[1], fit_full$kernel_params[3])
+
   funcs_to_export <- c("fit_unified_full_model_reml_sp",
                        "fit_unified_H0_fixed_rho_sp_reml",
                        "run_unified_score_test_reml_sp",
-                       "run_unified_pipeline_reml_sp")
-  
-  # 2. Variable Importance Tests (Parallelized)[cite: 5]
-  var.importance.pvals <- foreach(j = 1:p, .combine = c, 
-                                  .packages = c("PairwiseSims", "MASS"),
-                                  .export = funcs_to_export) %dopar% {
-                                    
-                                    score_results <- tryCatch({
-                                      run_unified_pipeline_reml_sp(Y, X, Z_cov, coords_sp,
-                                                                   init_params_full = init_params_full,
-                                                                   test_type = "var_imp", idx_args = j, 
-                                                                   global_rhos = optimal_rhos)
-                                    }, error = function(e) {
-                                      message("Worker Error on Var ", j, ": ", e$message)
-                                      return(NULL)
-                                    })
-                                    
-                                    if (!is.null(score_results)) {
-                                      return(score_results$p_value)
-                                    } else {
-                                      return(NA) 
-                                    }
-                                  }
-  
-  names(var.importance.pvals) <- if(!is.null(colnames(Z_cov))) colnames(Z_cov) else paste0("Var", 1:p)
+                       "run_unified_pipeline_reml_sp",
+                       "run_test_or_error_sp")
+
+  var_names <- if(!is.null(colnames(Z_cov))) colnames(Z_cov) else paste0("Var", 1:p)
+
+  # 2. Variable Importance Tests (Parallelized). Each worker returns a p-value or
+  # an "ERROR: ..." string so that failures are reported, not turned into NA.
+  var_imp_res <- foreach(j = 1:p, .combine = c,
+                         .packages = c("PairwiseSims", "MASS"),
+                         .export = funcs_to_export) %dopar% {
+                           run_test_or_error_sp(Y, X, Z_cov, coords_sp, init_params_full,
+                                                "var_imp", j, optimal_rhos)
+                         }
+  stop_if_test_errors_sp(var_imp_res, paste("variable importance:", var_names))
+  var.importance.pvals <- as.numeric(var_imp_res)
+
+  names(var.importance.pvals) <- var_names
   
   # 3. Interaction Tests (Parallelized)[cite: 5]
   sig.pair <- which(var.importance.pvals < alpha)
@@ -143,27 +161,14 @@ data_analysis_pipeline_parallel_sp <- function(Y, X, Z_cov, coords_sp, init_para
     test_names <- paste(var_names[interaction.tests[, 1]], 
                         var_names[interaction.tests[, 2]], sep=" x ")
     
-    int_pvals <- foreach(i = 1:nrow(interaction.tests), 
-                         .combine = c, .packages = c("PairwiseSims", "MASS"),
-                         .export = funcs_to_export) %dopar% {
-                           
-                           score_res <- tryCatch({
-                             run_unified_pipeline_reml_sp(Y, X, Z_cov, coords_sp, 
-                                                          init_params_full = init_params_full,
-                                                          test_type = "interaction",
-                                                          idx_args = c(interaction.tests[i, 1], interaction.tests[i, 2]), 
-                                                          global_rhos = optimal_rhos)
-                           }, error = function(e) {
-                             message("Worker Error on Interaction ", i, ": ", e$message)
-                             return(NULL)
-                           })
-                           
-                           if (!is.null(score_res)) {
-                             return(score_res$p_value)
-                           } else {
-                             return(NA)
-                           }
-                         }
+    int_res <- foreach(i = 1:nrow(interaction.tests),
+                       .combine = c, .packages = c("PairwiseSims", "MASS"),
+                       .export = funcs_to_export) %dopar% {
+                         run_test_or_error_sp(Y, X, Z_cov, coords_sp, init_params_full, "interaction",
+                                              c(interaction.tests[i, 1], interaction.tests[i, 2]), optimal_rhos)
+                       }
+    stop_if_test_errors_sp(int_res, paste("interaction:", test_names))
+    int_pvals <- as.numeric(int_res)
     
     interaction_df <- data.frame(
       Var1 = interaction.tests[, 1],
