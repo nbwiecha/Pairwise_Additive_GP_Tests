@@ -40,8 +40,22 @@ final_data <- merged_data %>%
     Poverty_Ratio = INDFMPIR,
     
     # Questionnaires
-    Smoker = SMQ040 != "Not at all", # 1/2 = Current smoker everyday/some days
+    # Current smoker. SMQ040 ("Do you now smoke cigarettes?") is only asked of
+    # people who have smoked at least 100 cigarettes (SMQ020 == "Yes"), so
+    # never-smokers are NA in SMQ040 and must be coded from SMQ020; otherwise
+    # drop_na() below silently removes every never-smoker.
+    Smoker = case_when(
+      SMQ020 == "No" ~ FALSE,                            # never smoker
+      SMQ040 %in% c("Every day", "Some days") ~ TRUE,    # current smoker
+      SMQ040 == "Not at all" ~ FALSE,                    # former smoker
+      TRUE ~ NA                                          # refused / don't know / missing
+    ),
+    # Regular drinker (at least monthly in the past 12 months). ALQ121 is only
+    # asked of people who have ever had a drink (ALQ111 == "Yes"), so lifetime
+    # abstainers are coded from ALQ111.
     Alcohol_User = case_when(
+      ALQ111 == "No" ~ FALSE,                            # never had a drink
+
       ALQ121 %in% c("Every day", "Nearly every day", "3 to 4 times a week", 
                     "2 times a week", "Once a week", "2 to 3 times a month", 
                     "Once a month") ~ TRUE,

@@ -59,25 +59,28 @@ evaluate_global_interaction <- function(n, p, rho_corr, mean_fn, snr) {
   )
   
   # 4. Execute the Global Interaction Test & Prediction Pipeline
+  # Mirrors the var_imp/interaction tests in simulation_framework.R: fit the full
+  # (alternative) model once to estimate rho, use it for prediction, then run the
+  # all-interactions score test with rho fixed at that estimate.
   tryCatch({
-    # Score Test for Any Interaction
-    test_out <- run_unified_all_interactions_pipeline_reml(
-      Y = Y, 
-      X = X_int, 
-      coords_list = coords_list, 
-      init_params_full = c(0, 0)
-    )
-    if (!is.null(test_out)) {
-      res["Unified_REML_pval"] <- as.numeric(test_out$p_value)
-    }
-    
-    # Fit Full Model for Prediction (MSE)
-    fit_full <- fit_unified_full_model_reml(Y, X_int, coords_list, c(0,0))
+    fit_full <- fit_unified_full_model_reml(Y, X_int, Z_cov = S, init_params = c(0, 0))
     if (!is.null(fit_full) && fit_full$convergence == 0) {
-      pred_uni <- predict_unified_surface_with_se(fit_full, Y, X_int, S, S_test, X_int_test)
+      # Prediction accuracy (MSE) of the full model
+      pred_uni <- predict_unified_surface_with_se(fit_full, Y_train = Y, X_train = X_int,
+                                                  Z_train = S, Z_new = S_test, X_new = X_int_test)
       res["Unified_REML_MSE"] <- as.numeric(mean((pred_uni$Predicted_Y - EY_test)^2))
+
+      # Score test for any pairwise interaction
+      test_out <- run_unified_pipeline_reml(
+        Y, X_int, Z_cov = S, init_params_full = fit_full$kernel_params,
+        test_type = "all_interactions", idx_args = NULL,
+        global_rho = fit_full$kernel_params[1]
+      )
+      if (!is.null(test_out)) {
+        res["Unified_REML_pval"] <- as.numeric(test_out$p_value)
+      }
     }
-    
+
   }, error = function(e) {
     warning(paste("Worker Global Interaction Test Error:", e$message))
   })
@@ -100,6 +103,9 @@ run_global_interaction_simulation <- function(B = 1000, n = 300, p = 10,
   explicit_exports <- c(
     "evaluate_global_interaction",
     "fit_unified_full_model_reml",
+    "fit_unified_H0_fixed_rho_reml",
+    "run_unified_score_test_reml",
+    "run_unified_pipeline_reml",
     "fit_unified_all_interactions_H0_fixed_rho_reml",
     "run_unified_all_interactions_score_test_reml",
     "run_unified_all_interactions_pipeline_reml",
@@ -177,5 +183,5 @@ payload <- list(
 study_results <- generate_study_report(
   results_list = payload, 
   alpha = alpha_thresh, 
-  save_path = "outputs/SimResults_GlobalInteraction_n300_p10.Rdata"
+  save_path = "outputs/SimResults_AnyInteraction_n300.Rdata" # file name read by output_table.R
 )

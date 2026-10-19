@@ -90,8 +90,7 @@ ncwell_int_test_sp <- run_unified_pipeline_reml_sp(
   Z_cov = S,
   coords_sp = S[,1:2],
   init_params_full = init_params,
-  test_type = "all_interactions",
-  idx_args = 11:20 # R-based index (1st covariate)
+  test_type = "all_interactions" # tests all pairwise interactions; idx_args is not used
 )
 ncwell_int_test_sp
 
@@ -103,11 +102,11 @@ ncwell_metals <- run_unified_pipeline_reml_sp(
     coords_sp = S[,1:2],
     init_params_full = init_params,
     test_type = "var_imp",
-    idx_args = 11:20 # R-based index (1st covariate)
+    idx_args = 10:20 # R-based indices of the 11 metals in S (arsenic is column 10)
   )
 print(ncwell_metals)
 
-save(ncwell_int_test, ncwell_metals, file="outputs/ncwell_obesity_int_joint.Rdata")
+save(ncwell_int_test_sp, ncwell_metals, file="outputs/ncwell_obesity_int_joint.Rdata")
 
 corrplot(cor(S))
 round(cor(S),2)
