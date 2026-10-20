@@ -48,9 +48,11 @@ plot_custom_interaction <- function(model, smooth_term, clean_title, x_label = N
   sm <- smooth_estimates(model, smooth = smooth_term)
   
   if (mask_too_far) {
-    sm <- sm %>%
-      add_too_far(model$model) %>%
-      filter(!.too_far)
+    # gratia no longer exports add_too_far(); use mgcv's equivalent
+    v <- strsplit(gsub("^ti\\(|^te\\(|^s\\(|\\)$| ", "", smooth_term), ",")[[1]]
+    too_far <- mgcv::exclude.too.far(sm[[v[1]]], sm[[v[2]]],
+                                     model$model[[v[1]]], model$model[[v[2]]], dist = 0.1)
+    sm <- sm[!too_far, ]
   }
   
   clean_vars <- gsub("^ti\\(|^te\\(|^s\\(|\\)$", "", smooth_term) 
@@ -107,9 +109,11 @@ plot_custom_interaction_sig <- function(model, smooth_term, clean_title, x_label
   
   # Apply data support masking
   if (mask_too_far) {
-    sm <- sm %>%
-      add_too_far(model$model) %>%
-      filter(!.too_far)
+    # gratia no longer exports add_too_far(); use mgcv's equivalent
+    v <- strsplit(gsub("^ti\\(|^te\\(|^s\\(|\\)$| ", "", smooth_term), ",")[[1]]
+    too_far <- mgcv::exclude.too.far(sm[[v[1]]], sm[[v[2]]],
+                                     model$model[[v[1]]], model$model[[v[2]]], dist = 0.1)
+    sm <- sm[!too_far, ]
   }
   
   # Calculate the Z-score (Estimate / Standard Error)

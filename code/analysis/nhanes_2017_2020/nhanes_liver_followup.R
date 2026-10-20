@@ -103,22 +103,30 @@ save(gam_follow, data.gam, form_alt, liver_table, int_tab, ols_joint_p,
 # ---------------------------------------------------------
 p_hg <- plot_custom_main_effect(gam_follow, "ti(Log_Mercury)", "Mercury", x_label = "ln(Mercury)", show_rug = TRUE)
 p_mn <- plot_custom_main_effect(gam_follow, "ti(Log_Manganese)", "Manganese", x_label = "ln(Manganese)", show_rug = TRUE)
-p_mn_male <- plot_custom_varying_effect(gam_follow, "ti(Log_Manganese):Male", "Manganese, Males",
-                                        x_label = "ln(Manganese)", show_rug = TRUE)
 p_pb <- plot_custom_main_effect(gam_follow, "ti(Log_Lead)", "Lead", x_label = "ln(Lead)", show_rug = TRUE)
 p_cd <- plot_custom_main_effect(gam_follow, "ti(Log_Cadmium)", "Cadmium", x_label = "ln(Cadmium)", show_rug = TRUE)
 p_se <- plot_custom_main_effect(gam_follow, "ti(Log_Selenium)", "Selenium", x_label = "ln(Selenium)", show_rug = TRUE)
-p_main <- wrap_plots(p_hg, p_mn, p_mn_male, p_pb, p_cd, p_se, ncol = 3)
+p_main <- wrap_plots(p_hg, p_mn, p_pb, p_cd, p_se, ncol = 3)
 ggsave("outputs/figs/nhanes_main.png", plot = p_main, width = 7, height = 5)
 
-# Metal-HDL-C interactions that are significant in both PAGP and the follow-up GAM
-p_mn_hdl <- plot_custom_interaction(gam_follow, "ti(Log_Manganese,HDL_C)", "Manganese & HDL-C Interaction",
-                                    x_label = "ln(Manganese)", y_label = "HDL-C",
-                                    mask_too_far = FALSE, show_points = TRUE)
-p_cd_hdl <- plot_custom_interaction(gam_follow, "ti(Log_Cadmium,HDL_C)", "Cadmium & HDL-C Interaction",
-                                    x_label = "ln(Cadmium)", y_label = "HDL-C",
-                                    mask_too_far = FALSE, show_points = TRUE)
-ggsave("outputs/figs/nhanes_int.png", plot = p_mn_hdl | p_cd_hdl, width = 9, height = 3)
+# Metal interactions significant in both PAGP and the follow-up GAM, with data
+# support across their range.
+# Each line is the metal's main effect plus its interaction with the modifier.
+p_mn_male <- plot_partial_effect_1d(gam_follow, data.gam, x_var = "Log_Manganese", mod_var = "Male",
+                                    title = "Manganese by Sex", x_label = "ln(Manganese)",
+                                    legend_title = "Sex", quantiles = c(0, 1),
+                                    quantile_labels = c("Female", "Male"))
+p_pb_alc <- plot_partial_effect_1d(gam_follow, data.gam, x_var = "Log_Lead", mod_var = "Alcohol_User",
+                                   title = "Lead by Alcohol Use", x_label = "ln(Lead)",
+                                   legend_title = "Alcohol use", quantiles = c(0, 1),
+                                   quantile_labels = c("Non-user", "User"))
+p_pb_age <- plot_partial_effect_1d(gam_follow, data.gam, x_var = "Log_Lead", mod_var = "Age",
+                                   title = "Lead by Age", x_label = "ln(Lead)",
+                                   legend_title = "Age (Quantiles)")
+p_int <- (p_mn_male | p_pb_alc | p_pb_age) & labs(y = "Partial Effect") &
+  theme(legend.position = "bottom", legend.title.position = "top", legend.key.width = unit(0.8, "cm"),
+        plot.title = element_text(face = "bold"))
+ggsave("outputs/figs/nhanes_int.png", plot = p_int, width = 10, height = 3.6)
 
 # ---------------------------------------------------------
 # 5. Summary statistics (supplement tables)
