@@ -502,71 +502,8 @@ p_as_income_sig <- plot_custom_interaction_sig(
 ggsave("outputs/figs/int_as_income_sig.png", plot=p_as_income_sig, width=9, height=5)
 
 #### NHANES Liver ####
-gam.alt.nohg
-p_mn_alt <- plot_custom_main_effect(gam.alt.nohg, "ti(Log_Manganese)", "Manganese", 
-                                x_label="ln(Manganese)", show_rug = TRUE)
-p_mn_male_alt <- plot_custom_varying_effect(gam.alt.nohg, "ti(Log_Manganese):Male", "Manganese, Male Only", 
-                                x_label="ln(Manganese)", show_rug = TRUE)
-p_pb_alt <- plot_custom_main_effect(gam.alt.nohg, "ti(Log_Lead)", "Lead", 
-                                x_label="ln(Lead)", show_rug = TRUE)
-p_cd_alt <- plot_custom_main_effect(gam.alt.nohg, "ti(Log_Cadmium)", "Cadmium", 
-                                x_label="ln(Cadmium)", show_rug = TRUE)
-p_se_alt <- plot_custom_main_effect(gam.alt.nohg, "ti(Log_Selenium)", "Selenium", 
-                                x_label="ln(Selenium)", show_rug = TRUE)
-
-p_univariate_nhanes <- wrap_plots(p_mn_alt, p_mn_male_alt, p_pb_alt, p_cd_alt, p_se_alt, ncol = 3)
-ggsave("outputs/figs/nhanes_main.png", plot=p_univariate_nhanes, width=7, height=5)
-
-draw(gam.alt.nohg, select=c(6,9))
-
-p_mn_hdl <- plot_custom_interaction(
-  model = gam.alt.nohg, 
-  smooth_term = "ti(Log_Manganese,HDL_C)", 
-  clean_title = "Manganese & HDL-C Interaction",
-  x_label = "Manganese",
-  y_label = "HDL-C",
-  mask_too_far = FALSE,
-  show_points = TRUE
-)
-
-p_cd_hdl <- plot_custom_interaction(
-  model = gam.alt.nohg, 
-  smooth_term = "ti(Log_Cadmium,HDL_C)", 
-  clean_title = "Cadmium & HDL-C Interaction",
-  x_label = "Cadmium",
-  y_label = "HDL-C",
-  mask_too_far = FALSE,
-  show_points = TRUE
-)
-
-p_int_nhanes <- p_mn_hdl | p_cd_hdl
-ggsave("outputs/figs/nhanes_int.png", plot=p_int_nhanes, width=9, height=3)
-
-p_mn_hdl_sig <- plot_custom_interaction_sig(
-  model = gam.alt.nohg, 
-  smooth_term = "ti(Log_Manganese,HDL_C)", 
-  clean_title = "Manganese & HDL-C Interaction",
-  x_label = "Manganese",
-  y_label = "HDL-C",
-  mask_too_far = FALSE,
-  show_points = TRUE
-)
-
-p_cd_hdl_sig <- plot_custom_interaction_sig(
-  model = gam.alt.nohg, 
-  smooth_term = "ti(Log_Cadmium,HDL_C)", 
-  clean_title = "Cadmium & HDL-C Interaction",
-  x_label = "Cadmium",
-  y_label = "HDL-C",
-  mask_too_far = FALSE,
-  show_points = TRUE
-)
-
-p_int_nhanes_sig <- p_mn_hdl_sig | p_cd_hdl_sig
-ggsave("outputs/figs/nhanes_int.png", plot=p_int_nhanes, width=9, height=3)
-
-ggsave("outputs/figs/int_mn_hdl_sig.png", plot=p_mn_hdl_sig, width=9, height=5)
-ggsave("outputs/figs/int_cd_hdl_sig.png", plot=p_cd_hdl_sig, width=9, height=5)
+# Liver figures (nhanes_main.png, nhanes_int.png) are produced by
+# code/analysis/nhanes_2017_2020/nhanes_liver_followup.R
 
 ############# NHANES Telomere ###############
 p_pcb_126_telo <- plot_custom_main_effect(gam.telo, "s(log_PCB126)", "PCB 126", 
